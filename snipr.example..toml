@@ -1,0 +1,20 @@
+# --- core settings ---------------------------------------------------
+[polling]
+min_seconds = 30            # lower bound of random window
+max_seconds = 60            # upper bound of random window
+end_grace_seconds = 60      # stop if price stays flat this long
+
+[network]
+rotate_user_agents = true
+use_proxies = false
+proxy_file = "proxies.txt"  # one http(s) proxy per line if enabled
+retry_backoff_seconds = 30  # initial back-off when 429/503
+
+# --- tracked items ---------------------------------------------------
+[[item]]
+url  = "https://online.asi3auctions.com/auctions/9364/auctio6-10260/lot-details/8ff7d327-b54b-4ffe-ad90-b3350029dd3e"
+site = "asi3"
+
+[[item]]
+url  = "https://example.com/auction/lot/123"
+site = "ebay"
