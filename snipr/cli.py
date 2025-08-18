@@ -55,7 +55,7 @@ def ls(
     ] = 20,
 ):
     """Show recent snapshots."""
-    rows = latest_items_for_site(site.upper(), limit=limit)
+    rows = latest_items_for_site(site.lower(), limit=limit)
     for row in rows:
         print(
             f"{row.timestamp:%H:%M:%S} | {row.item_title[:40]:40} | ${row.price:,.2f}"
