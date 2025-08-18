@@ -38,6 +38,11 @@ dev = [
   "pytest>=8.4.1,<9",
   "pytest-asyncio>=1.1.0,<2",
 ]
+webui = [
+  "fastapi", 
+  "uvicorn[standard]", 
+  "monsterui", 
+]
 
 # ---------- CLI entry point ----------
 [project.scripts]

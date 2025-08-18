@@ -98,3 +98,62 @@ def latest_items_for_site(site: str, limit: int = 10) -> list[Bid] | None:
         )
 
         return s.exec(stmt).all()
+
+
+def latest_for(site: str, url: str) -> Optional[Bid]:
+    """Latest snapshot for a specific (site, url)."""
+    with Session(engine) as s:
+        stmt = (
+            select(Bid)
+            .where(Bid.site == site, Bid.item_url == url)
+            .order_by(Bid.timestamp.desc())
+            .limit(1)
+        )
+        return s.exec(stmt).first()
+
+
+def history_for(site: str, url: str, limit: int = 100) -> list[Bid]:
+    """Newest-first history for (site, url)."""
+    with Session(engine) as s:
+        stmt = (
+            select(Bid)
+            .where(Bid.site == site, Bid.item_url == url)
+            .order_by(Bid.timestamp.desc())
+            .limit(limit)
+        )
+        return s.exec(stmt).all()
+
+
+def recent_latest(limit_per_item: int = 1, max_items: int = 50) -> list[Bid]:
+    """
+    Latest row per (site, item_url), up to max_items items.
+    If limit_per_item > 1, return that many most recent rows for each item.
+    """
+    with Session(engine) as s:
+        # Rank rows by (site,item_url) with window; rn=1 is latest
+        ranked = select(
+            Bid,
+            func.row_number()
+            .over(partition_by=(Bid.site, Bid.item_url), order_by=Bid.timestamp.desc())
+            .label("rn"),
+        ).subquery()
+        BidAlias = aliased(Bid, ranked)
+        base = select(BidAlias).where(ranked.c.rn <= limit_per_item)
+        # Order groups by most recent timestamp first, then within group by timestamp desc
+        stmt = base.order_by(BidAlias.timestamp.desc())
+        rows = s.exec(stmt).all()
+        if max_items and limit_per_item >= 1:
+            # Reduce number of items (groups) while preserving group blocks
+            out: list[Bid] = []
+            seen_items: set[tuple[str, str]] = set()
+            groups = 0
+            for r in rows:
+                key = (r.site, r.item_url)
+                if key not in seen_items:
+                    if groups >= max_items:
+                        break
+                    seen_items.add(key)
+                    groups += 1
+                out.append(r)
+            return out
+        return rows

@@ -1,0 +1,15 @@
+
+version: "3.9"
+services:
+  snipr:
+    build: .
+    container_name: snipr_server
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount local data dir with snipr.toml and snipr.db
+      - ./data:/data
+    environment:
+      - SNIPR_DB_PATH=/data/snipr.db
+      - SNIPR_CONFIG_PATH=/data/snipr.toml
+    restart: unless-stopped
