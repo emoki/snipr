@@ -63,37 +63,36 @@ async def _schedule_all():
     scheduler = AsyncIOScheduler(timezone="UTC")
     states: dict[str, JobState] = {}
 
+    def make_wrapper(item, state, job_id):
+        async def wrapper():
+            try:
+                await _poll_one(item, settings, state)
+            except AuctionFinished:
+                log.info("Stopping job %s", job_id)
+                scheduler.remove_job(job_id)
+                if not scheduler.get_jobs():
+                    log.info("No more jobs – shutting down")
+                    scheduler.shutdown(wait=False)
+
+        return wrapper
+
     for idx, item in enumerate(settings.item):
         state = states[item.url] = JobState()
         # random initial delay so all jobs don't fire together
         delay = random.uniform(0, settings.polling.min_seconds)
 
-        def make_wrapper(item, state, job_id):
-            async def wrapper():
-                try:
-                    await _poll_one(item, settings, state)
-                except AuctionFinished:
-                    log.info("Stopping job %s", job_id)
-                    scheduler.remove_job(job_id)
-                    if not scheduler.get_jobs():
-                        log.info("No more jobs – shutting down")
-                        scheduler.shutdown(wait=False)
-
-            return wrapper
-
-        for idx, item in enumerate(settings.item):
-            job_id = f"lot-{idx}"
-            scheduler.add_job(
-                make_wrapper(item, state, job_id),
-                "interval",
-                seconds=settings.polling.min_seconds,
-                jitter=settings.polling.max_seconds - settings.polling.min_seconds,
-                next_run_time=datetime.utcnow() + timedelta(seconds=delay),
-                id=job_id,
-                coalesce=True,
-                max_instances=1,
-                misfire_grace_time=30,
-            )
+        job_id = f"lot-{idx}"
+        scheduler.add_job(
+            make_wrapper(item, state, job_id),
+            "interval",
+            seconds=settings.polling.min_seconds,
+            jitter=settings.polling.max_seconds - settings.polling.min_seconds,
+            next_run_time=datetime.utcnow() + timedelta(seconds=delay),
+            id=job_id,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=30,
+        )
 
     scheduler.start()
     print("snipr started – Ctrl+C to quit")
