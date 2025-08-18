@@ -1,7 +1,7 @@
 import asyncio, random, logging, httpx, time
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from snipr.settings import load_settings
+from snipr.settings import load_settings, Settings
 from snipr.core import AuctionFinished
 from snipr.fetchers.asi3 import Asi3Auction
 from snipr.db import record
@@ -39,7 +39,7 @@ async def _poll_one(item_cfg, settings, state: JobState):
         return
 
     # store + console print
-    record(snap, site=item_cfg.site.upper(), item_url=item_cfg.url)
+    record(snap, site=item_cfg.site.lower(), item_url=item_cfg.url)
     log.info("%s → $%.2f", snap.item_title, snap.current_price)
 
     # detect change / end-of-auction
@@ -55,41 +55,69 @@ async def _poll_one(item_cfg, settings, state: JobState):
         raise AuctionFinished
 
 
-async def _schedule_all():
-    settings = load_settings()
-    scheduler = AsyncIOScheduler(timezone="UTC")
-    states: dict[str, JobState] = {}
+_scheduler_global: AsyncIOScheduler | None = None
 
-    def make_wrapper(item, state, job_id):
+
+async def get_scheduler() -> AsyncIOScheduler:
+    global _scheduler_global
+    if _scheduler_global is None:
+        _scheduler_global = AsyncIOScheduler(timezone="UTC")
+    return _scheduler_global
+
+
+async def add_job(
+    item_cfg,
+    settings: Settings,
+    state: JobState,
+    scheduler: AsyncIOScheduler,
+    job_id: str,
+):
+    def make_wrapper(item, state: JobState, job_id: str):
         async def wrapper():
             try:
                 await _poll_one(item, settings, state)
             except AuctionFinished:
                 log.info("Stopping job %s", job_id)
-                scheduler.remove_job(job_id)
-                if not scheduler.get_jobs():
-                    log.info("No more jobs – shutting down")
-                    scheduler.shutdown(wait=False)
+                await remove_job(job_id, scheduler)
 
         return wrapper
 
+    # random initial delay so all jobs don't fire together
+    delay = random.uniform(0, settings.polling.min_seconds)
+
+    scheduler.add_job(
+        make_wrapper(item_cfg, state, job_id),
+        "interval",
+        seconds=settings.polling.min_seconds,
+        jitter=settings.polling.max_seconds - settings.polling.min_seconds,
+        next_run_time=datetime.utcnow() + timedelta(seconds=delay),
+        id=job_id,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=30,
+    )
+
+
+async def remove_job(job_id: str, scheduler: AsyncIOScheduler):
+    try:
+        scheduler.remove_job(job_id)
+        log.info("Removed job %s", job_id)
+        if not scheduler.get_jobs():
+            log.info("No more jobs – shutting down")
+            scheduler.shutdown(wait=False)
+    except Exception as exc:
+        log.warning("Failed to remove job %s: %s", job_id, exc)
+
+
+async def _schedule_all():
+    settings = load_settings()
+    scheduler = await get_scheduler()
+    states: dict[str, JobState] = {}
+
     for idx, item in enumerate(settings.item):
         state = states[item.url] = JobState()
-        # random initial delay so all jobs don't fire together
-        delay = random.uniform(0, settings.polling.min_seconds)
-
         job_id = f"lot-{idx}"
-        scheduler.add_job(
-            make_wrapper(item, state, job_id),
-            "interval",
-            seconds=settings.polling.min_seconds,
-            jitter=settings.polling.max_seconds - settings.polling.min_seconds,
-            next_run_time=datetime.utcnow() + timedelta(seconds=delay),
-            id=job_id,
-            coalesce=True,
-            max_instances=1,
-            misfire_grace_time=30,
-        )
+        await add_job(item, settings, state, scheduler, job_id)
 
     scheduler.start()
     print("snipr started – Ctrl+C to quit")
