@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import httpx
 from bs4 import BeautifulSoup
 
-from snipr.core import AuctionSite, BidSnapshot, BidParseError
+from snipr.core import AuctionSite, BidSnapshot, BidParseError, AuctionFinished
 
 # --------------------------------------------------------------------------- #
 #  Selectors & regex helpers
@@ -37,6 +37,7 @@ _PRICE_RE = re.compile(r"\$?\s*([0-9][\d,]*\.?\d{0,2})")
 _LOTNUM_RE = re.compile(r"\bLOT(?:\s+No\.)?\s*#?\s*([A-Za-z0-9-]+)")
 _BIDS_RE = re.compile(r"\b([0-9]+)\s*bids?\b", re.I)
 _CURRENCY_RE = re.compile(r"(USD|GBP|EUR|CAD|AUD)")
+_ACTION_ENDED_RE = re.compile(r"(Bidding has ended on this item)")
 
 
 # --------------------------------------------------------------------------- #
@@ -111,6 +112,11 @@ class Asi3Auction(AuctionSite):
 
         price_txt = self._first_text(soup, _PRICE_SEL)
         bids_txt = self._first_text(soup, _BIDS_SEL) or body_text
+
+        if not price_txt:
+            bid_ended = self._first_match(_ACTION_ENDED_RE, body_text)
+            if bid_ended:
+                raise AuctionFinished
 
         # --- mandatory fields ------------------------------------------------
         if not (item_title and lot_number and price_txt):

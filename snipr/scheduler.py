@@ -2,6 +2,7 @@ import asyncio, random, logging, httpx, time
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from snipr.settings import load_settings
+from snipr.core import AuctionFinished
 from snipr.fetchers.asi3 import Asi3Auction
 from snipr.db import record
 
@@ -18,10 +19,6 @@ class JobState:
     def __init__(self):
         self.last_price: float | None = None
         self.last_change: float = time.time()
-
-
-class AuctionFinished(Exception):
-    """Raised when we decide a lot is done."""
 
 
 async def _poll_one(item_cfg, settings, state: JobState):

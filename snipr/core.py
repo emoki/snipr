@@ -18,6 +18,10 @@ class BidParseError(RuntimeError):
     """Raised when mandatory price data cannot be extracted from the HTML/DOM."""
 
 
+class AuctionFinished(Exception):
+    """Raised when we decide a lot is done."""
+
+
 class AuctionSite(ABC):
     """A pluggable scraper/bid reader."""
 
