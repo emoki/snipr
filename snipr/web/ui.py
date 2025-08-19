@@ -3,8 +3,9 @@ from urllib.parse import quote
 from fasthtml.common import *
 from monsterui.all import *
 
-from .scheduler_bridge import list_tracked, track_item, untrack_item
+from .scheduler_bridge import track_item, untrack_item
 from snipr import db as core_db
+from starlette.requests import Request
 
 
 def _price_cell(row):
@@ -17,23 +18,22 @@ def _price_cell(row):
 
 def _tracked_items_table():
     rows = []
-    for t in list_tracked():
-        latest = core_db.latest_for(t["site"], t["url"])
-        # Build hx target+payload without relying on .to()
-        hx_vals = {"site": t["site"], "url": t["url"]}
+    for t in core_db.tracked_list(active_only=True):
+        latest = core_db.latest_for(t.site, t.url)
+        site_q = quote(t.site, safe="")
+        url_q = quote(t.url, safe="")
         rows.append(
             Tr(
-                Td(t["site"].lower()),
-                Td(A(t["url"], href=t["url"], target="_blank")),
-                Td(latest.item_title if latest else "—"),
+                Td(t.site.lower()),
+                Td(A(t.url, href=t.url, target="_blank")),
+                Td(latest.item_title if latest else (t.title or "—")),
                 Td(_price_cell(latest)),
                 Td(latest.timestamp.isoformat() if latest else "—"),
                 Td(
                     Button(
                         "History",
                         cls=ButtonT.secondary,
-                        hx_get="/history_partial",
-                        hx_vals=hx_vals,
+                        hx_get=f"/history_partial?site={site_q}&url={url_q}",
                         hx_target="#history-pane",
                         hx_swap="innerHTML",
                     ),
@@ -41,11 +41,10 @@ def _tracked_items_table():
                     Button(
                         "Remove",
                         cls=ButtonT.destructive,
-                        hx_post="/delete_item",
-                        hx_vals=hx_vals,
+                        hx_post=f"/delete_item?site={site_q}&url={url_q}",
                         hx_confirm="Stop tracking this item?",
                         hx_target="#items-pane",
-                        hx_swap="outerHTML",
+                        hx_swap="innerHTML",
                     ),
                 ),
             )
@@ -79,11 +78,12 @@ def _AddItemForm():
         Form(
             hx_post="/create_item",
             hx_target="#items-pane",
-            hx_swap="outerHTML",
+            hx_swap="innerHTML",
             cls="space-y-4",
         )(
             LabelSelect(
                 *[Option(s, value=s) for s in sites],
+                value="asi3" if "asi3" in sites else sites[0],
                 label="Site",
                 id="site",
                 name="site",
@@ -110,21 +110,35 @@ def _LogsPane():
         H3("Live Log"),
         Div(
             id="log-stream",
-            hx_ext="sse",
-            sse_connect="/logs_stream",
-            sse_swap="message",
-            hx_swap="beforeend show:bottom",
-            cls="h-80 overflow-y-auto border rounded-md p-3 bg-base-200",
+            cls="h-80 overflow-y-auto border rounded-md p-3 bg-base-200 font-mono text-sm",
         ),
+        # inline client that appends lines as they arrive
+        Script("""
+          (function(){
+            if (window.__sniprLogES) return;
+            var el = document.getElementById('log-stream');
+            function append(line){
+              var d = document.createElement('div');
+              d.textContent = line;
+              el.appendChild(d);
+              el.scrollTop = el.scrollHeight;
+            }
+            function start(){
+              var es = new EventSource('/logs_stream');
+              window.__sniprLogES = es;
+              es.onmessage = function(ev){ append(ev.data); };
+              es.onerror = function(){ try{ es.close(); }catch(e){}; window.__sniprLogES = null; setTimeout(start, 1500); };
+            }
+            start();
+          })();
+          """),
     )
 
 
 def add_ui_routes(app, rt, broadcast_handler):
-    # Home page — explicit path
     @rt("/")
     def get():
         return Titled(
-            "snipr Dashboard",
             Container(
                 Div(cls="flex items-center justify-between mb-4")(
                     H1("snipr Dashboard"),
@@ -147,7 +161,6 @@ def add_ui_routes(app, rt, broadcast_handler):
             ),
         )
 
-    # Partials / actions — explicit paths
     @rt("/history_partial")
     def get(site: str, url: str):
         hist = core_db.history_for(site, url, limit=100)
@@ -167,17 +180,33 @@ def add_ui_routes(app, rt, broadcast_handler):
             cls="table table-compact w-full",
         )
 
-    @app.post("/create_item")  # <- HTMX form posts here
-    async def create_item(site: str, url: str):
+    @app.post("/create_item")
+    async def create_item(request: Request):
+        # accept both form and query (robust for HTMX)
+        try:
+            form = await request.form()
+        except Exception:
+            form = {}
+        site = (form.get("site") or request.query_params.get("site") or "").strip()
+        url = (form.get("url") or request.query_params.get("url") or "").strip()
+        if not site or not url:
+            return P("Missing site or url")
         await track_item(site=site, url=url, fetch_now=True)
         return _tracked_items_table()
 
-    @app.post("/delete_item")  # <- HTMX button posts here
-    async def delete_item(site: str, url: str):
+    @app.post("/delete_item")
+    async def delete_item(request: Request):
+        try:
+            form = await request.form()
+        except Exception:
+            form = {}
+        site = (form.get("site") or request.query_params.get("site") or "").strip()
+        url = (form.get("url") or request.query_params.get("url") or "").strip()
+        if not site or not url:
+            return P("Missing site or url")
         await untrack_item(site=site, url=url)
         return _tracked_items_table()
 
-    # Optional: debug route to see what's registered
     @rt("/__routes__")
     def get():
         paths = [getattr(r, "path", str(r)) for r in app.routes]

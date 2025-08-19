@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from sqlmodel import SQLModel, Field, create_engine, Session, select
 from sqlalchemy import UniqueConstraint, func
@@ -14,36 +14,40 @@ from sqlalchemy.orm import aliased
 class Bid(SQLModel, table=True):
     __tablename__ = "bid"
     __table_args__ = (
-        # Avoid exact duplicates if a poll retries within the same second
         UniqueConstraint("site", "item_url", "timestamp", name="uq_site_url_ts"),
     )
-
     id: Optional[int] = Field(default=None, primary_key=True)
-
-    # identity
     site: str = Field(index=True)  # e.g., "asi3"
     item_url: str = Field(index=True)
     item_title: str
     lot_number: Optional[str] = Field(default=None, index=True)
-
-    # snapshot
     timestamp: datetime = Field(index=True, description="Snapshot time (UTC)")
     price: float = Field(description="Current bid at timestamp")
     total_bids: Optional[int] = None
-
-    # extra
     currency: str = Field(default="USD", max_length=8)
-    sales_tax: Optional[float] = None  # percent, e.g. 7.5
-    buyers_premium: Optional[float] = None  # percent, e.g. 18.0
+    sales_tax: Optional[float] = None
+    buyers_premium: Optional[float] = None
 
 
-DB_URL = "sqlite:///snipr.sqlite"
+# NEW: Tracked URLs for the web server
+class Tracked(SQLModel, table=True):
+    __tablename__ = "tracked"
+    __table_args__ = (UniqueConstraint("site", "url", name="uq_tracked_site_url"),)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    site: str = Field(index=True)
+    url: str = Field(index=True)
+    title: Optional[str] = None
+    active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.utcnow())
+    updated_at: datetime = Field(default_factory=lambda: datetime.utcnow())
+
+
+DB_URL = "sqlite:///snipr/data/snipr.sqlite"
 engine = create_engine(DB_URL, echo=False)
 SQLModel.metadata.create_all(engine)
 
 
 def record(snapshot, site: str, item_url: str) -> Bid:
-    """Persist one bid snapshot (object must conform to BidSnapshot Protocol)."""
     row = Bid(
         site=site,
         item_url=item_url,
@@ -62,7 +66,6 @@ def record(snapshot, site: str, item_url: str) -> Bid:
             s.commit()
         except Exception:
             s.rollback()
-            # If uniqueness hit, return existing row
             existing = s.exec(
                 select(Bid).where(
                     Bid.site == site,
@@ -89,19 +92,16 @@ def latest_items_for_site(site: str, limit: int = 10) -> list[Bid] | None:
             .where(Bid.site == site)
             .subquery()
         )
-
         BidAlias = aliased(Bid, ranked_subq)
         stmt = (
             select(BidAlias)
-            .where(ranked_subq.c.rn <= limit)  # keep top-N
+            .where(ranked_subq.c.rn <= limit)
             .order_by(BidAlias.item_title, BidAlias.timestamp.desc())
         )
-
         return s.exec(stmt).all()
 
 
 def latest_for(site: str, url: str) -> Optional[Bid]:
-    """Latest snapshot for a specific (site, url)."""
     with Session(engine) as s:
         stmt = (
             select(Bid)
@@ -113,7 +113,6 @@ def latest_for(site: str, url: str) -> Optional[Bid]:
 
 
 def history_for(site: str, url: str, limit: int = 100) -> list[Bid]:
-    """Newest-first history for (site, url)."""
     with Session(engine) as s:
         stmt = (
             select(Bid)
@@ -125,12 +124,7 @@ def history_for(site: str, url: str, limit: int = 100) -> list[Bid]:
 
 
 def recent_latest(limit_per_item: int = 1, max_items: int = 50) -> list[Bid]:
-    """
-    Latest row per (site, item_url), up to max_items items.
-    If limit_per_item > 1, return that many most recent rows for each item.
-    """
     with Session(engine) as s:
-        # Rank rows by (site,item_url) with window; rn=1 is latest
         ranked = select(
             Bid,
             func.row_number()
@@ -139,11 +133,9 @@ def recent_latest(limit_per_item: int = 1, max_items: int = 50) -> list[Bid]:
         ).subquery()
         BidAlias = aliased(Bid, ranked)
         base = select(BidAlias).where(ranked.c.rn <= limit_per_item)
-        # Order groups by most recent timestamp first, then within group by timestamp desc
         stmt = base.order_by(BidAlias.timestamp.desc())
         rows = s.exec(stmt).all()
         if max_items and limit_per_item >= 1:
-            # Reduce number of items (groups) while preserving group blocks
             out: list[Bid] = []
             seen_items: set[tuple[str, str]] = set()
             groups = 0
@@ -157,3 +149,57 @@ def recent_latest(limit_per_item: int = 1, max_items: int = 50) -> list[Bid]:
                 out.append(r)
             return out
         return rows
+
+
+# ---- Tracked helpers for the Web UI/API ------------------------------------
+
+
+def tracked_add(site: str, url: str, title: Optional[str] = None) -> Tracked:
+    now = datetime.utcnow()
+    with Session(engine) as s:
+        existing = s.exec(
+            select(Tracked).where(Tracked.site == site, Tracked.url == url)
+        ).first()
+        if existing:
+            existing.active = True
+            if title:
+                existing.title = title
+            existing.updated_at = now
+            s.add(existing)
+            s.commit()
+            s.refresh(existing)
+            return existing
+        row = Tracked(
+            site=site, url=url, title=title, active=True, created_at=now, updated_at=now
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return row
+
+
+def tracked_remove(site: str, url: str) -> bool:
+    """Soft-remove: mark inactive so history remains; scheduler will stop job."""
+    now = datetime.utcnow()
+    with Session(engine) as s:
+        row = s.exec(
+            select(Tracked).where(Tracked.site == site, Tracked.url == url)
+        ).first()
+        if not row:
+            return False
+        if not row.active:
+            return True
+        row.active = False
+        row.updated_at = now
+        s.add(row)
+        s.commit()
+        return True
+
+
+def tracked_list(active_only: bool = True) -> List[Tracked]:
+    with Session(engine) as s:
+        stmt = select(Tracked)
+        if active_only:
+            stmt = stmt.where(Tracked.active == True)  # noqa: E712
+        stmt = stmt.order_by(Tracked.created_at.desc())
+        return s.exec(stmt).all()

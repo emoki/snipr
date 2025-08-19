@@ -5,6 +5,8 @@ import tomllib
 import os
 import random
 
+SNIPR_ROOT = Path(os.getenv("SNIPR_ROOT", "./snipr/"))
+
 
 class PollingCfg(BaseModel):
     min_seconds: int = 30
@@ -52,6 +54,6 @@ class Settings(BaseModel):
 
 
 def load_settings() -> Settings:
-    cfg_path = Path(os.getenv("SNIPR_CONFIG", "snipr.toml"))
+    cfg_path = SNIPR_ROOT / "data/snipr.toml"
     raw = tomllib.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     return Settings.model_validate(raw)

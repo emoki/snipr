@@ -5,6 +5,7 @@ import os
 import typer
 from snipr.scheduler import main as run
 from snipr.db import latest_items_for_site
+from snipr.settings import SNIPR_ROOT
 
 if os.getenv("DEBUG_CLI", "0") == "1":
     import debugpy
@@ -24,7 +25,11 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 file_handler = RotatingFileHandler(
-    "./snipr.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    SNIPR_ROOT / "data/snipr.log",
+    maxBytes=10 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+    mode="+a",
 )
 file_handler.setLevel(LOG_LEVEL)
 file_handler.setFormatter(
