@@ -8,6 +8,8 @@ from sqlmodel import SQLModel, Field, create_engine, Session, select
 from sqlalchemy import UniqueConstraint, func
 from sqlalchemy.orm import aliased
 
+from snipr.settings import SNIPR_ROOT
+
 # TODO(migrations): integrate Alembic here (env.py + versions/). No runtime hacks.
 
 
@@ -42,7 +44,7 @@ class Tracked(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.utcnow())
 
 
-DB_URL = "sqlite:///snipr/data/snipr.sqlite"
+DB_URL = f"sqlite:////{SNIPR_ROOT}/data/snipr.sqlite"
 engine = create_engine(DB_URL, echo=False)
 SQLModel.metadata.create_all(engine)
 

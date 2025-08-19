@@ -5,7 +5,8 @@ import tomllib
 import os
 import random
 
-SNIPR_ROOT = Path(os.getenv("SNIPR_ROOT", "./snipr/"))
+
+SNIPR_ROOT = Path(os.getenv("SNIPR_ROOT", "./snipr")).absolute()
 
 
 class PollingCfg(BaseModel):
